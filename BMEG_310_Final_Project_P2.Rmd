@@ -47,21 +47,30 @@ set.seed(123)
 RNAseq_KIRC <- read.csv("RNAseq_KIRC.csv")
 data_clinical_patient <- read.delim("data_clinical_patient.txt", header = TRUE, sep = "\t", skip = 4)
 data_mutations <- read.delim("data_mutations.txt", header = TRUE, sep = "\t", stringsAsFactors = FALSE)
-
-# RNAseq: Gene names and sample IDs
-gene_names <- RNAseq_KIRC[, 1]  # First column contains gene names
-rnaseq_samples <- colnames(RNAseq_KIRC)[-1]  # Remove first column (gene names)
-cat("Number of genes in RNA-seq:", length(gene_names), "\n")
-cat("Number of RNA-seq samples:", length(rnaseq_samples), "\n")
-
-# Clinical: Patient IDs 
-clinical_patients <- data_clinical_patient$PATIENT_ID
-cat("Number of clinical patients:", length(clinical_patients), "\n")
-
-# Mutations: Unique patient IDs (multiple rows per patient possible)
-mutation_patients <- unique(data_mutations$Tumor_Sample_Barcode)
-cat("Number of patients with mutation data:", length(mutation_patients), "\n\n")
 ```
+
+```{r}
+# RNAseq_KIRC dataset
+rna_patient_ids <- gsub("\\.", "-", substr(colnames(RNAseq_KIRC), 1, 12))
+# Data_clinical_patient dataset
+clinical_patient_ids <- unique(data_clinical_patient$PATIENT_ID)
+# Data_mutation dataset
+mutation_patient_ids <- unique(substr(data_mutations$Tumor_Sample_Barcode, 1,
+12))
+# Common patients
+common_patients <- Reduce(intersect, list(rna_patient_ids,
+clinical_patient_ids, mutation_patient_ids))
+
+# Patients in all three datasets
+common_patients <- Reduce(intersect, list(
+  rna_patient_ids,
+  clinical_patient_ids,
+  mutation_patient_ids
+))
+cat("Number of patients in ALL datasets:", length(common_patients), "\n")
+
+```
+
 # TODO: Verify data dimensions and alignment
 # - Check that sample IDs match across all datasets
 # - Confirm no missing critical values
@@ -72,26 +81,6 @@ cat("Number of patients with mutation data:", length(mutation_patients), "\n\n")
 ```
 
 ```{r}
-# 2. Check that sample IDs match across all datasets
-cat("RNA-seq samples (first 3):\n")
-print(head(rnaseq_samples, 3))
-cat("\nClinical patients (first 3):\n")
-print(head(clinical_patients, 3))
-cat("\nMutation patients (first 3):\n")
-print(head(mutation_patients, 3))
-cat("\n")
-
-# IDs don't match, so standardize them:
-# For RNA-seq: convert periods to hyphens and extract patient ID
-rnaseq_samples_clean <- gsub("\\.", "-", rnaseq_samples)  # Replace . with -
-rnaseq_patient_ids <- substr(rnaseq_samples_clean, 1, 12)  # Get first 12 chars, remove rest
-
-# For mutations: extract patient ID (remove sample end like -01)
-mutation_patient_ids <- substr(mutation_patients, 1, 12)
-
-# Clinical IDs should already be in correct format but rename for consistency
-clinical_patient_ids <- clinical_patients
-
 # Check for missing values
 # RNA-seq:
 rnaseq_missing <- sum(is.na(RNAseq_KIRC))
@@ -151,7 +140,7 @@ dds <- DESeqDataSetFromMatrix(
   colData = coldata,
   design = ~ 1  # No DE, normalization only
 )
-cat("DESeq2 object created successfully!\n\n")
+cat("DESeq2 object created successfully\n\n")
 
 # Estimate size factors
 cat("Estimating size factors...\n")
@@ -175,52 +164,6 @@ print(normalized_counts[1:5, 1:3])
 cat("\n")
 
 sf <- sizeFactors(dds)
-
-# -----------------DO WE THINK THE FOLLOWING IS NECESSARY? -----------------
-
-# Boxplot of size factors
-ggplot(data.frame(sample = names(sf), size_factor = sf),
-       aes(x = "", y = size_factor)) +
-  geom_boxplot() +
-  geom_jitter(width = 0.1) +
-  labs(title = "Size Factor Distribution", y = "Size Factor", x = "") +
-  theme_bw()
-
-# Identify potential outliers (rule of thumb: +/- 2 SD)
-sf_mean <- mean(sf)
-sf_sd <- sd(sf)
-outliers <- names(sf)[abs(sf - sf_mean) > 2 * sf_sd]
-
-cat("Potential outlier samples based on size factor:\n")
-print(outliers)
-cat("\n")
-
-# 2. PCA plot (after variance stabilizing transformation)
-library(DESeq2)
-
-vsd <- vst(dds, blind = TRUE)
-
-pca_data <- plotPCA(vsd, intgroup = "condition", returnData = TRUE)
-percentVar <- round(100 * attr(pca_data, "percentVar"))
-
-ggplot(pca_data, aes(PC1, PC2)) +
-  geom_point(size = 3) +
-  labs(title = "PCA Plot", 
-       x = paste0("PC1: ", percentVar[1], "% variance"),
-       y = paste0("PC2: ", percentVar[2], "% variance")) +
-  theme_bw()
-
-# 3. Sample distance heatmap
-library(pheatmap)
-
-sample_dists <- dist(t(assay(vsd)))
-sample_dist_matrix <- as.matrix(sample_dists)
-
-pheatmap(sample_dist_matrix,
-         clustering_distance_rows = sample_dists,
-         clustering_distance_cols = sample_dists,
-         main = "Sample-to-Sample Distance Heatmap")
-
 ```
 
 ## 2.2: Log-transformation
@@ -240,7 +183,7 @@ cat("Example log2 counts (first 5 genes, first 3 samples):\n")
 print(log2_counts[1:5, 1:3])
 cat("\n")
 
-# Quality check: compare distributions before/after log transform -------- CHAT GENERATED
+# Quality check: compare distributions before/after log transform
 # Calculate summary statistics for a random sample
 set.seed(123)
 sample_gene <- sample(1:nrow(normalized_counts), 1)
@@ -251,131 +194,6 @@ print(summary(normalized_counts[sample_gene, ]))
 cat("\nAfter log transformation:\n")
 print(summary(log2_counts[sample_gene, ]))
 cat("\n")
-
-# -----------------DO WE THINK THE FOLLOWING IS NECESSARY? -----------------
-# TODO: Visualize: density plots or histograms
-# --------------------------------------------------
-
-cat("Generating visualization plots...\n")
-
-# Set up plotting area
-par(mfrow = c(2, 2))
-
-# Select a few random samples for visualization
-set.seed(123)
-sample_cols <- sample(1:ncol(normalized_counts), 4)
-
-# Plot 1: Density plot - Before transformation
-plot(density(normalized_counts[, sample_cols[1]]), 
-     main = "Density: Before Log Transformation",
-     xlab = "Normalized Counts",
-     ylab = "Density",
-     col = "blue",
-     lwd = 2,
-     xlim = c(0, quantile(normalized_counts, 0.99)))
-for(i in 2:4) {
-  lines(density(normalized_counts[, sample_cols[i]]), 
-        col = i, lwd = 2)
-}
-legend("topright", 
-       legend = paste("Sample", 1:4),
-       col = 1:4,
-       lwd = 2)
-
-# Plot 2: Density plot - After transformation
-plot(density(log2_counts[, sample_cols[1]]), 
-     main = "Density: After Log Transformation",
-     xlab = "Log2(Counts + 1)",
-     ylab = "Density",
-     col = "blue",
-     lwd = 2)
-for(i in 2:4) {
-  lines(density(log2_counts[, sample_cols[i]]), 
-        col = i, lwd = 2)
-}
-legend("topright", 
-       legend = paste("Sample", 1:4),
-       col = 1:4,
-       lwd = 2)
-
-# Plot 3: Histogram - Before transformation
-hist(normalized_counts[, sample_cols[1]],
-     breaks = 50,
-     main = "Histogram: Before Log Transformation",
-     xlab = "Normalized Counts",
-     ylab = "Frequency",
-     col = "lightblue",
-     border = "white",
-     xlim = c(0, quantile(normalized_counts, 0.99)))
-
-# Plot 4: Histogram - After transformation
-hist(log2_counts[, sample_cols[1]],
-     breaks = 50,
-     main = "Histogram: After Log Transformation",
-     xlab = "Log2(Counts + 1)",
-     ylab = "Frequency",
-     col = "lightgreen",
-     border = "white")
-
-par(mfrow = c(1, 1))
-
-
-# Additional comparison: Box plots across samples
-par(mfrow = c(1, 2))
-
-# Boxplot: Before (showing subset of samples for visibility)
-boxplot(normalized_counts[, sample_cols],
-        main = "Before Log Transform",
-        ylab = "Normalized Counts",
-        xlab = "Samples",
-        col = "lightblue",
-        names = paste("S", 1:4, sep = ""))
-
-# Boxplot: After
-boxplot(log2_counts[, sample_cols],
-        main = "After Log Transform",
-        ylab = "Log2(Counts + 1)",
-        xlab = "Samples",
-        col = "lightgreen",
-        names = paste("S", 1:4, sep = ""))
-
-par(mfrow = c(1, 1))
-
-
-# Check variance stabilization
-cat("\n=== Variance Stabilization Check ===\n")
-
-# Calculate mean and variance for each gene before and after transformation
-mean_before <- rowMeans(normalized_counts)
-var_before <- apply(normalized_counts, 1, var)
-
-mean_after <- rowMeans(log2_counts)
-var_after <- apply(log2_counts, 1, var)
-
-# Plot mean-variance relationship
-par(mfrow = c(1, 2))
-
-plot(log10(mean_before), log10(var_before),
-     main = "Mean-Variance: Before Log Transform",
-     xlab = "Log10(Mean)",
-     ylab = "Log10(Variance)",
-     pch = 16,
-     col = rgb(0, 0, 1, 0.3),
-     cex = 0.5)
-abline(0, 1, col = "red", lwd = 2, lty = 2)  # Reference line (variance = mean)
-
-plot(mean_after, var_after,
-     main = "Mean-Variance: After Log Transform",
-     xlab = "Mean",
-     ylab = "Variance",
-     pch = 16,
-     col = rgb(0, 1, 0, 0.3),
-     cex = 0.5)
-
-par(mfrow = c(1, 1))
-
-cat("\nLog transformation complete!\n")
-cat("Log2-transformed counts stored in 'log2_counts' object\n")
 ```
 
 ## 2.3: Z-score transformation
