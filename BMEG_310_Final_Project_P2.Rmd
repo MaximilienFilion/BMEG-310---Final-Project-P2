@@ -176,6 +176,8 @@ cat("\n")
 
 sf <- sizeFactors(dds)
 
+# -----------------DO WE THINK THE FOLLOWING IS NECESSARY? -----------------
+
 # Boxplot of size factors
 ggplot(data.frame(sample = names(sf), size_factor = sf),
        aes(x = "", y = size_factor)) +
@@ -250,7 +252,7 @@ cat("\nAfter log transformation:\n")
 print(summary(log2_counts[sample_gene, ]))
 cat("\n")
 
-
+# -----------------DO WE THINK THE FOLLOWING IS NECESSARY? -----------------
 # TODO: Visualize: density plots or histograms
 # --------------------------------------------------
 
