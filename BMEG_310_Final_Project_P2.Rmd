@@ -38,7 +38,7 @@ set.seed(123)
 # STEP 1: DATA LOADING AND INITIAL SETUP
 # ============================================================================
 
-# TODO: Load your data files
+# Load the data files
 # - count_matrix: raw counts (genes x samples)
 # - clinical_data: patient clinical information
 # - mutation_data: mutation status for each patient
@@ -49,14 +49,15 @@ data_clinical_patient <- read.delim("data_clinical_patient.txt", header = TRUE, 
 data_mutations <- read.delim("data_mutations.txt", header = TRUE, sep = "\t", stringsAsFactors = FALSE)
 ```
 
+# Creates a dataframe containing all the patients common to the three datasets.
+will be used in downstream applications.
 ```{r}
 # RNAseq_KIRC dataset
 rna_patient_ids <- gsub("\\.", "-", substr(colnames(RNAseq_KIRC), 1, 12))
 # Data_clinical_patient dataset
 clinical_patient_ids <- unique(data_clinical_patient$PATIENT_ID)
 # Data_mutation dataset
-mutation_patient_ids <- unique(substr(data_mutations$Tumor_Sample_Barcode, 1,
-12))
+mutation_patient_ids <- unique(substr(data_mutations$Tumor_Sample_Barcode, 1, 12))
 # Common patients
 common_patients <- Reduce(intersect, list(rna_patient_ids,
 clinical_patient_ids, mutation_patient_ids))
@@ -68,20 +69,22 @@ common_patients <- Reduce(intersect, list(
   mutation_patient_ids
 ))
 cat("Number of patients in ALL datasets:", length(common_patients), "\n")
+```
+# Trim the datasets to only include the common patients
+```{r}
+# Trim the RNA sequencing dataset 
+RNAseq_KIRC <- RNAseq_KIRC[ , gsub("\\.", "-", substr(colnames(RNAseq_KIRC), 1, 12)) %in% common_patients]
 
+# Trim the clinical dataset
+data_clinical_patient <- data_clinical_patient[data_clinical_patient$PATIENT_ID %in% common_patients, ]
+
+# Trim the mutation dataset
+data_mutations <- data_mutations[substr(data_mutations$Tumor_Sample_Barcode, 1, 12) %in% common_patients, ]
 ```
 
-# TODO: Verify data dimensions and alignment
-# - Check that sample IDs match across all datasets
-# - Confirm no missing critical values
-# - Document sample size and gene count - done above?
-```{r}
-#colnames(data_clinical_patient)
-#colnames(data_mutations)
-```
 
-```{r}
 # Check for missing values
+```{r}
 # RNA-seq:
 rnaseq_missing <- sum(is.na(RNAseq_KIRC))
 cat("Missing values in RNA-seq count matrix:", rnaseq_missing, "\n")
