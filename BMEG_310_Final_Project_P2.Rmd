@@ -18,7 +18,7 @@ output:
 # ============================================================================
 
 # Load required libraries
-```{r}
+```{r, results='hide'}
 library(DESeq2)
 library(pheatmap)
 library(ggplot2)
@@ -72,8 +72,10 @@ cat("Number of patients in ALL datasets:", length(common_patients), "\n")
 ```
 # Trim the datasets to only include the common patients
 ```{r}
-# Trim the RNA sequencing dataset 
-RNAseq_KIRC <- RNAseq_KIRC[ , gsub("\\.", "-", substr(colnames(RNAseq_KIRC), 1, 12)) %in% common_patients]
+#For the RNA seq dataset, we want to keep all the common patient columns and the ensembl gene ID (i.e.Column "X")
+# Trim the RNA sequencing dataset
+common_patients_and_X <- c(common_patients, "X")
+RNAseq_KIRC <- RNAseq_KIRC[ , gsub("\\.", "-", substr(colnames(RNAseq_KIRC), 1, 12)) %in% common_patients_and_X]
 
 # Trim the clinical dataset
 data_clinical_patient <- data_clinical_patient[data_clinical_patient$PATIENT_ID %in% common_patients, ]
