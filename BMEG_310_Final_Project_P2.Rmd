@@ -601,15 +601,15 @@ age_cluster_data$age_group <- cut(age_cluster_data$AGE,
                                    include.lowest = TRUE)
 
 # Summary statistics by cluster
-cat("=== Age Distribution by Cluster ===\n")
-age_summary <- aggregate(AGE ~ Cluster_Label, data = age_cluster_data, 
-                         FUN = function(x) c(Mean = mean(x), 
-                                             SD = sd(x), 
-                                             Median = median(x),
-                                             Min = min(x),
-                                             Max = max(x)))
-print(age_summary)
-cat("\n")
+#cat("=== Age Distribution by Cluster ===\n")
+#age_summary <- aggregate(AGE ~ Cluster_Label, data = age_cluster_data, 
+                         #FUN = function(x) c(Mean = mean(x), 
+                                             #SD = sd(x), 
+                                             #Median = median(x),
+                                             #Min = min(x),
+                                             #Max = max(x)))
+#print(age_summary)
+#cat("\n")
 
 ```
 
