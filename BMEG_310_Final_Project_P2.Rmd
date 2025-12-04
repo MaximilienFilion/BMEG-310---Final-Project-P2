@@ -19,6 +19,8 @@ output:
 
 # Load required libraries
 ```{r, results='hide'}
+install.packages("factoextra")
+library(factoextra)
 library(DESeq2)
 library(pheatmap)
 library(ggplot2)
