@@ -70,19 +70,32 @@ common_patients <- Reduce(intersect, list(
 ))
 cat("Number of patients in ALL datasets:", length(common_patients), "\n")
 ```
+
 # Trim the datasets to only include the common patients
 ```{r}
 #For the RNA seq dataset, we want to keep all the common patient columns and the ensembl gene ID (i.e.Column "X")
 # Trim the RNA sequencing dataset
-#common_patients_and_X <- c(common_patients, "X")
-#RNAseq_KIRC <- RNAseq_KIRC[ , gsub("\\.", "-", substr(colnames(RNAseq_KIRC), 1, 12)) %in% common_patients_and_X]
+common_patients_and_X <- c(common_patients, "X")
+RNAseq_KIRC <- RNAseq_KIRC[ , gsub("\\.", "-", substr(colnames(RNAseq_KIRC), 1, 12)) %in% common_patients_and_X]
 
 # Trim the clinical dataset
-#data_clinical_patient <- data_clinical_patient[data_clinical_patient$PATIENT_ID %in% common_patients, ]
+data_clinical_patient <- data_clinical_patient[data_clinical_patient$PATIENT_ID %in% common_patients, ]
 
 # Trim the mutation dataset
-#data_mutations <- data_mutations[substr(data_mutations$Tumor_Sample_Barcode, 1, 12) %in% common_patients, ]
+data_mutations <- data_mutations[substr(data_mutations$Tumor_Sample_Barcode, 1, 12) %in% common_patients, ]
 ```
+
+<!-- # Merge the different ensembl version in the RNAseq dataframe -->
+<!-- ```{r} -->
+<!-- # Strip the ensembl version -->
+<!-- RNAseq_KIRC$X <- gsub("\\..*$", "", RNAseq_KIRC$X) -->
+
+<!-- # Collapse the duplicates -- GenAI was used for this part -->
+<!-- RNAseq_KIRC_novers <- RNAseq_KIRC %>% -->
+<!--   group_by(X) %>% -->
+<!--   summarise(across(everything(), sum)) -->
+<!-- ``` -->
+The code above only cuts ~50 duplicate genes and takes a while to run. It was commented to signify that we thought about it but did not use it due to computational ressources. 
 
 
 # Check for missing values
@@ -198,52 +211,73 @@ cat("Z-scored VST range:", range(z_vst, na.rm = TRUE), "\n\n")
 ```
 
 
-# CHECKPOINT: Save preprocessed expression matrix for all analyses
-
 # ============================================================================
 # INVESTIGATION 1: Global Expression-Based Clustering
 # RQ 2.1: Do patients cluster into distinct phenotype subtypes?
 # ============================================================================
 
-## GOAL: Identify natural patient groupings based on global gene expression
+# Filter the most variable genes 
+2000 most variable genes were selected. 2000 is an arbitrary number that was chosen to reduce the size of the dataset. Running distance on 60660 observations was too computationally intensive.
+```{r}
+# compute variance
+gene_vars <- apply(z_vst, 1, var)
 
-## Step 1.1: Distance calculation
-# TODO: Transpose matrix (samples as rows)
-# TODO: Calculate distance matrix (Euclidean or correlation-based)
-# TODO: Document distance metric choice and rationale
+#Rank the genes by variance
+top_genes <- names(sort(gene_vars, decreasing = TRUE))[1:2000]
 
-## Step 1.2: Hierarchical clustering
-# TODO: Perform hierarchical clustering (method: ward.D2, complete, or average)
-# TODO: Create dendrogram visualization
-# TODO: Try multiple linkage methods and compare
+# Create a subset matrix with the top 2000 genes
+expr_z_top <- z_vst[top_genes, ]
+```
 
-## Step 1.3: Determine optimal number of clusters
-# TODO: Calculate silhouette scores for k = 2 to 10
-# TODO: Plot silhouette scores vs k
-# TODO: Consider gap statistic as alternative
-# TODO: Examine dendrogram for natural breaks
-# TODO: DECISION: Choose optimal k based on metrics
 
-## Step 1.4: Cut tree and assign cluster labels
-# TODO: Cut dendrogram at chosen k
-# TODO: Create cluster assignment vector
-# TODO: Document cluster sizes
+# Plot PCA and look for distinct group
+```{r}
+pca_res <- prcomp(t(expr_z_top), scale = FALSE)  # already Z-scored, so scale=FALSE
 
-## Step 1.5: Dimensionality reduction visualization
-# TODO: Perform PCA on expression data
-# TODO: Plot PC1 vs PC2 colored by cluster
-# TODO: Calculate variance explained by top PCs
-# TODO: Alternative: try t-SNE or UMAP
+# Percentage variance explained
+pve <- (pca_res$sdev^2) / sum(pca_res$sdev^2)
 
-## Step 1.6: Cluster validation
-# TODO: Calculate silhouette width for each sample
-# TODO: Identify poorly clustered samples
-# TODO: Check cluster stability (bootstrap or subsample)
+# Scree plot
+ggplot(data.frame(PC = 1:10, Var = pve[1:10]),
+       aes(x = PC, y = Var)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Scree Plot: Variance Explained by PCA Components") +
+  ylab("Proportion of Variance Explained")
 
-## CONCLUSION FOR RQ 2.1:
-# TODO: Report number of distinct clusters identified
-# TODO: Describe separation quality (silhouette scores, visual separation)
-# TODO: Note any outlier samples or unclear assignments
+# PCA scatter plot: PC1 vs PC2
+pca_df <- data.frame(
+  Sample = rownames(t(expr_z_top)),
+  PC1 = pca_res$x[,1],
+  PC2 = pca_res$x[,2]
+)
+
+ggplot(pca_df, aes(x = PC1, y = PC2)) +
+  geom_point(alpha = 0.7) +
+  ggtitle("PCA of KIRC Patients (Top 2000 Variance Genes)") +
+  xlab(paste0("PC1 (", round(pve[1] * 100, 1), "%)")) +
+  ylab(paste0("PC2 (", round(pve[2] * 100, 1), "%)")) +
+  theme_minimal()
+```
+
+# Compute distance and Apply clustering on expression data
+```{r}
+dist_mat <- dist(t(expr_z_top), method = "euclidean")
+hc <- hclust(dist_mat, method = "ward.D2")
+
+plot(hc, labels = FALSE, hang = -1)
+```
+
+
+# Plot the distance heatmap
+```{r}
+pheatmap(
+  t(expr_z_top),
+  show_rownames = FALSE,
+  show_colnames = FALSE,
+  clustering_method = "ward.D2"
+)
+```
+
 
 # ============================================================================
 # INVESTIGATION 2: High-Variance Gene Clustering
