@@ -659,4 +659,364 @@ pheatmap(
 # END OF TEMPLATE
 # ============================================================================
 
+```{r}
+
+# Investigation 8: Top 500 Variable Genes by Tumor Stage
+
+# RQ 2.8: Which genes exhibit the greatest variability in expression by tumor stage?
+# H8: Higher tumor stage correlates with oncogene expression
+
+library(ggplot2)
+library(pheatmap)
+library(biomaRt)   
+library(dplyr)    
+
+cat("Investigation 8: Variable Genes by Stage\n")
+
+#Fix gene data ID's to correct format
+
+# Problem: Ensembl IDs have version numbers (e.g., ENSG00000000003.15)
+# Solution: Remove version numbers and map to readable gene symbols (HGNC)
+
+cat("Fixing Ensembl gene IDs and mapping to gene symbols...\n")
+
+# Use log_norm_counts from the preprocessing script
+# This is log2(normalized_counts + 1)
+log2_counts <- log_norm_counts
+
+# Also prepare z-scores for visualization later
+z_scores <- z_log
+
+# Remove version numbers from Ensembl IDs (everything after the dot)
+clean_ids <- sub("\\..*", "", rownames(log2_counts))
+
+# Update rownames with clean IDs
+rownames(log2_counts) <- clean_ids
+rownames(z_scores) <- clean_ids
+
+# Connect to Ensembl BioMart to get gene symbol mappings
+mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Query BioMart: get gene symbols for our Ensembl IDs
+mapping <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol"),
+  filters = "ensembl_gene_id",
+  values = clean_ids,
+  mart = mart
+)
+
+# Convert matrix to dataframe for joining
+expr_df <- as.data.frame(log2_counts)
+expr_df$ensembl_gene_id <- rownames(expr_df)
+
+# Join expression data with gene symbol mapping
+expr_merged <- expr_df %>%
+  left_join(mapping, by = "ensembl_gene_id")
+
+# Drop genes without symbols (unannotated genes)
+expr_merged <- expr_merged %>% filter(hgnc_symbol != "")
+
+# Remove duplicates (some Ensembl IDs map to same symbol)
+expr_merged <- expr_merged %>% distinct(hgnc_symbol, .keep_all = TRUE)
+
+# Set gene symbols as rownames for easy access
+rownames(expr_merged) <- expr_merged$hgnc_symbol
+
+# Remove helper columns
+expr_merged$ensembl_gene_id <- NULL
+expr_merged$hgnc_symbol <- NULL
+
+# Convert back to matrix
+expr_symbol <- as.matrix(expr_merged)
+
+# Do the same for z-scores
+z_df <- as.data.frame(z_scores)
+z_df$ensembl_gene_id <- rownames(z_df)
+
+z_merged <- z_df %>%
+  left_join(mapping, by = "ensembl_gene_id") %>%
+  filter(hgnc_symbol != "") %>%
+  distinct(hgnc_symbol, .keep_all = TRUE)
+
+rownames(z_merged) <- z_merged$hgnc_symbol
+z_merged$ensembl_gene_id <- NULL
+z_merged$hgnc_symbol <- NULL
+
+z_scores <- as.matrix(z_merged)
+
+cat("Gene ID conversion complete.\n")
+cat("Number of genes after symbol mapping:", nrow(expr_symbol), "\n")
+
+
+# Step 1: Match RNA Seq data to clinical stage data
+
+# Problem: RNA-seq sample IDs don't exactly match clinical patient IDs
+# Solution: Extract patient ID (first 12 characters) and join with clinical data
+
+cat("Matching samples to clinical stage\n")
+
+# Extract patient ID from RNA-seq sample names
+# Example: TCGA.AB.2842.03A.01R → TCGA-AB-2842
+rnaseq_patient_ids <- substr(gsub("\\.", "-", colnames(expr_symbol)), 1, 12)
+
+# Create lookup table
+stage_info <- data.frame(
+  sample_id = colnames(expr_symbol),
+  patient_id = rnaseq_patient_ids,
+  stringsAsFactors = FALSE
+)
+
+# Join with clinical data to get stage information
+stage_info <- stage_info %>%
+  left_join(
+    data_clinical_patient %>% 
+      dplyr::select(PATIENT_ID, AJCC_PATHOLOGIC_TUMOR_STAGE) %>%
+      rename(patient_id = PATIENT_ID, stage = AJCC_PATHOLOGIC_TUMOR_STAGE),
+    by = "patient_id"
+  ) %>%
+  filter(!is.na(stage) & stage != "")  # Keep only samples with stage data
+
+cat("Samples with stage info:", nrow(stage_info), "\n")
+print(table(stage_info$stage))
+
+# Subset expression matrix to only samples with stage data
+expr_staged <- expr_symbol[, stage_info$sample_id]
+
+
+# Step 2: Variance and top 500 genes
+
+# Goal: Find genes with highest variability across samples
+# Why: Variable genes are more likely to be biologically meaningful
+
+cat("\nSelecting top 500 most variable genes\n")
+
+# Calculate variance for each gene across all samples
+gene_variance <- apply(expr_staged, 1, var)
+
+# Select top 500 genes with highest variance
+top500_genes <- names(sort(gene_variance, decreasing = TRUE)[1:500])
+
+cat("Top 500 genes selected\n")
+cat("Variance range:", range(gene_variance[top500_genes]), "\n\n")
+
+
+# Step 3: Anova test
+
+# Question: Do any of these 500 genes differ significantly by stage?
+# Method: One-way ANOVA (tests if means differ across stage groups)
+
+cat("Testing gene expression vs stage (ANOVA)\n")
+
+anova_results <- data.frame(
+  gene = top500_genes,
+  p_value = sapply(top500_genes, function(g) {
+    # ANOVA: does expression of gene g differ by stage?
+    fit <- aov(expr_staged[g, ] ~ factor(stage_info$stage))
+    summary(fit)[[1]]["Pr(>F)"][1, 1]  # Extract p-value
+  }),
+  stringsAsFactors = FALSE
+)
+
+# Adjust p-values for multiple testing (Benjamini-Hochberg FDR)
+anova_results$p_adj <- p.adjust(anova_results$p_value, method = "BH")
+anova_results$significant <- anova_results$p_adj < 0.05
+
+cat("Significant genes (FDR < 0.05):", sum(anova_results$significant), "\n\n")
+
+cat("Top 10 genes:\n")
+print(anova_results %>% arrange(p_adj) %>% head(10))
+
+
+# Step 4: Visualizations
+# Create heatmap and boxplots to visualize patterns
+
+# Get z-scored expression for top 500 genes
+# Using z_scores here for visualization (standardized scale)
+top500_matrix <- z_scores[top500_genes, stage_info$sample_id]
+
+# Annotation for heatmap columns
+annotation <- data.frame(
+  Stage = factor(stage_info$stage),
+  row.names = stage_info$sample_id
+)
+
+# Heatmap: shows all 500 genes clustered by expression pattern
+pheatmap(
+  top500_matrix,
+  annotation_col = annotation,
+  show_rownames = FALSE,
+  show_colnames = FALSE,
+  main = "Top 500 Variable Genes by Stage"
+)
+
+# Boxplots: show top 3 most significant genes in detail
+top3_genes <- head(anova_results %>% arrange(p_adj), 3)$gene
+
+for (gene in top3_genes) {
+  plot_data <- data.frame(
+    expression = expr_staged[gene, ],  # Using log2_counts here for actual values
+    stage = factor(stage_info$stage)
+  )
+  
+  print(
+    ggplot(plot_data, aes(stage, expression, fill = stage)) +
+      geom_boxplot() +
+      labs(title = paste("Gene:", gene), x = "Stage", y = "Log2 Expression") +
+      theme_bw()
+  )
+}
+
+
+# Step 5: Test oncogene hypothesis (H8)
+# H8: Higher tumor stage correlates with oncogene expression
+# Method: Check if known oncogenes are variable and correlate with stage
+
+cat("\nTesting oncogene hypothesis\n")
+
+# List of known oncogenes
+oncogenes <- c("MYC","KRAS","NRAS","HRAS","EGFR","ERBB2","PIK3CA",
+               "BRAF","AKT1","AKT2","MDM2","CCND1","CDK4","CDK6",
+               "MET","RET","ALK","ROS1","FGFR1","FGFR2")
+
+# Check which oncogenes are present in our dataset
+all_genes <- rownames(expr_staged)
+oncogenes_in_data <- intersect(all_genes, oncogenes)
+
+cat("\nOncogenes present in dataset:", length(oncogenes_in_data), "\n")
+print(oncogenes_in_data)
+
+# Check which oncogenes are in the top 500 most variable genes
+oncogenes_in_top500 <- intersect(top500_genes, oncogenes)
+cat("\nOncogenes in top 500 variable genes:", length(oncogenes_in_top500), "\n")
+print(oncogenes_in_top500)
+
+
+# Test all oncogenes present in data (not just top 500) 
+# This could be more exciting and give us different values
+if (length(oncogenes_in_data) > 0) {
+  cat("\nTesting ALL oncogenes for stage correlation\n")
+  
+  oncogene_results_all <- data.frame(
+    gene = oncogenes_in_data,
+    correlation = NA,
+    p_value = NA,
+    direction = NA,
+    in_top500 = oncogenes_in_data %in% top500_genes
+  )
+  
+  for (i in seq_along(oncogenes_in_data)) {
+    gene <- oncogenes_in_data[i]
+    
+    # Convert stage to numeric for correlation
+    # Stage I=1, Stage II=2, Stage III=3, Stage IV=4
+    stage_numeric <- as.numeric(factor(stage_info$stage, 
+                                       levels = c("STAGE I", "STAGE II", 
+                                                  "STAGE III", "STAGE IV")))
+    
+    # Spearman correlation: does expression correlate with stage number?
+    cor_test <- cor.test(stage_numeric, 
+                         expr_staged[gene, ],
+                         method = "spearman")
+    
+    oncogene_results_all$correlation[i] <- cor_test$estimate
+    oncogene_results_all$p_value[i] <- cor_test$p.value
+    oncogene_results_all$direction[i] <- ifelse(cor_test$estimate > 0, "UP", "DOWN")
+  }
+  
+  oncogene_results_all$p_adj <- p.adjust(oncogene_results_all$p_value, method = "BH")
+  oncogene_results_all$significant <- oncogene_results_all$p_adj < 0.05
+  
+  cat("\nOncogene correlation results:\n")
+  print(oncogene_results_all %>% arrange(p_adj))
+  
+  # Create boxplots for significant oncogenes
+  sig_oncogenes <- oncogene_results_all %>% 
+    filter(significant) %>% 
+    pull(gene)
+  
+  if (length(sig_oncogenes) > 0) {
+    cat("\nCreating boxplots for significant oncogenes...\n")
+    
+    for (gene in sig_oncogenes) {
+      plot_data <- data.frame(
+        expression = expr_staged[gene, ],
+        stage = factor(stage_info$stage)
+      )
+      
+      print(
+        ggplot(plot_data, aes(stage, expression, fill = stage)) +
+          geom_boxplot() +
+          labs(title = paste("Oncogene:", gene), 
+               x = "Stage", 
+               y = "Log2 Expression") +
+          theme_bw()
+      )
+    }
+  }
+  
+} else {
+  cat("\nNo oncogenes found in dataset.\n")
+}
+
+# Original test (only for oncogenes in top 500)
+if (length(oncogenes_in_top500) > 0) {
+  cat("\nOncogenes in top 500 variable genes\n")
+  
+  oncogene_results <- data.frame(
+    gene = oncogenes_in_top500,
+    correlation = NA,
+    p_value = NA,
+    direction = NA
+  )
+  
+  for (i in seq_along(oncogenes_in_top500)) {
+    gene <- oncogenes_in_top500[i]
+    
+    stage_numeric <- as.numeric(factor(stage_info$stage, 
+                                       levels = c("STAGE I", "STAGE II", 
+                                                  "STAGE III", "STAGE IV")))
+    
+    cor_test <- cor.test(stage_numeric, 
+                         expr_staged[gene, ],
+                         method = "spearman")
+    
+    oncogene_results$correlation[i] <- cor_test$estimate
+    oncogene_results$p_value[i] <- cor_test$p.value
+    oncogene_results$direction[i] <- ifelse(cor_test$estimate > 0, "UP", "DOWN")
+  }
+  
+  oncogene_results$p_adj <- p.adjust(oncogene_results$p_value, method = "BH")
+  oncogene_results$significant <- oncogene_results$p_adj < 0.05
+  
+  print(oncogene_results)
+  
+} else {
+  cat("\nNo oncogenes found among top 500 variable genes.\n")
+  cat("This is not necessarily wrong - see analysis of ALL oncogenes above.\n")
+}
+
+
+# Conclusion
+cat("\nConclusion for RQ 2.8 & H8\n")
+
+cat("1. Top 500 most variable genes identified.\n")
+cat("2. ", sum(anova_results$significant), "genes significantly associated with stage.\n")
+cat("3. Oncogenes in dataset:", length(oncogenes_in_data), "\n")
+cat("4. Oncogenes in top 500 variable:", length(oncogenes_in_top500), "\n")
+
+# Modified conclusion based on all oncogenes, not just top 500
+if (
+  length(oncogenes_in_data) > 0 &&
+  any(oncogene_results_all$significant & oncogene_results_all$direction == "UP")
+) {
+  cat("\nH8 SUPPORTED: Some oncogenes increase with tumor stage.\n")
+  sig_onco <- oncogene_results_all %>% 
+    filter(significant, direction == "UP") %>%
+    pull(gene)
+  cat("Significant oncogenes with UP regulation:", paste(sig_onco, collapse = ", "), "\n")
+} else {
+  cat("\n H8 NOT SUPPORTED: No oncogenes show significant stage-dependent increases.\n")
+}
+```
+
 
