@@ -362,8 +362,8 @@ ward_d2_DSS_plot
 #
 
 # ============================================================================
-# INVESTIGATION 3: 
-# RQ 2.3:
+# INVESTIGATION 4: 
+# RQ 2.4:
 # ============================================================================
 ```{r}
 #Clean Ensembl IDs and map to gene symbols
@@ -510,9 +510,172 @@ if("GZMB" %in% rownames(expr_staged)) {
 ```
 
 
-###### Iinvestigation 4
+###### Iinvestigation 5
 
-########Investigation 5
+```{r}
+# Subset to Samples (Patients) with Sex Info
+
+# Extract patient IDs and match to clinical data
+rnaseq_patient_ids <- substr(gsub("\\.", "-", colnames(expr_symbol)), 1, 12)
+
+sex_info <- data.frame(
+  sample_id = colnames(expr_symbol),
+  patient_id = rnaseq_patient_ids
+) %>%
+  left_join(
+    data_clinical_patient %>% 
+      dplyr::select(PATIENT_ID, SEX) %>%
+      rename(patient_id = PATIENT_ID, sex = SEX),
+    by = "patient_id"
+  ) %>%
+  filter(!is.na(sex) & sex != "")
+
+# Subset expression matrices
+expr_sex <- expr_symbol[, sex_info$sample_id]
+z_scores_sex <- z_scores_symbol[, sex_info$sample_id]
+
+cat("Samples with sex information:", nrow(sex_info), "\n")
+print(table(sex_info$sex))
+cat("\n")
+```
+```{r}
+# Select top 500 Most Variable genes
+
+# Calculate variance for each gene
+gene_variance <- apply(expr_sex, 1, var)
+
+# Select top 500
+top500_genes <- names(sort(gene_variance, decreasing = TRUE)[1:500])
+
+cat("Top 500 genes selected\n")
+cat("Variance range:", round(range(gene_variance[top500_genes]), 2), "\n\n")
+```
+```{r}
+# T-test by sex
+
+# Test if genes differ by sex (using t-test for two groups)
+sex_test_results <- data.frame(
+  gene = top500_genes,
+  p_value = sapply(top500_genes, function(g) {
+    male_expr <- expr_sex[g, sex_info$sex == "Male"]
+    female_expr <- expr_sex[g, sex_info$sex == "Female"]
+    
+    # Use t-test for two groups
+    test <- t.test(male_expr, female_expr)
+    test$p.value
+  }),
+  mean_diff = sapply(top500_genes, function(g) {
+    male_mean <- mean(expr_sex[g, sex_info$sex == "Male"])
+    female_mean <- mean(expr_sex[g, sex_info$sex == "Female"])
+    male_mean - female_mean
+  }),
+  fold_change = sapply(top500_genes, function(g) {
+    male_mean <- mean(expr_sex[g, sex_info$sex == "Male"])
+    female_mean <- mean(expr_sex[g, sex_info$sex == "Female"])
+    male_mean / female_mean
+  })
+)
+```
+
+```{r}
+# Multiple testing correction
+sex_test_results$p_adj <- p.adjust(sex_test_results$p_value, method = "BH")
+sex_test_results$significant <- sex_test_results$p_adj < 0.05
+
+cat("Significant genes (FDR < 0.05):", sum(sex_test_results$significant), "\n")
+cat("Proportion of top 500 genes significant:", 
+    round(sum(sex_test_results$significant)/500 * 100, 2), "%\n\n")
+
+cat("Top 10 most significant genes by sex:\n")
+print(sex_test_results %>% arrange(p_adj) %>% head(10))
+cat("\n")
+```
+```{r}
+# Summary statistics for significant genes
+if(sum(sex_test_results$significant) > 0) {
+  sig_genes <- sex_test_results %>% filter(significant)
+  
+  cat("Summary of significant genes:\n")
+  cat("Higher in males:", sum(sig_genes$mean_diff > 0), "\n")
+  cat("Higher in females:", sum(sig_genes$mean_diff < 0), "\n")
+  cat("Mean absolute fold change:", round(mean(abs(log2(sig_genes$fold_change))), 3), "\n\n")
+}
+```
+
+```{r}
+# Volcano plot: visualize differential expression by sex
+sex_test_results$log2FC <- log2(sex_test_results$fold_change)
+sex_test_results$neg_log10_p <- -log10(sex_test_results$p_adj)
+
+ggplot(sex_test_results, aes(x = log2FC, y = neg_log10_p, 
+                              color = significant)) +
+  geom_point(alpha = 0.6) +
+  scale_color_manual(values = c("grey", "red")) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", color = "blue") +
+  labs(title = "Differential Gene Expression by Sex",
+       subtitle = "Top 500 Most Variable Genes",
+       x = "Log2 Fold Change (Male/Female)",
+       y = "-Log10 Adjusted P-value",
+       color = "Significant (FDR < 0.05)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+# Boxplots for top 5 most significant genes
+if(sum(sex_test_results$significant) > 0) {
+  top_genes <- sex_test_results %>% 
+    filter(significant) %>% 
+    arrange(p_adj) %>% 
+    head(5) %>% 
+    pull(gene)
+  
+  # Prepare data for plotting
+  plot_data <- data.frame()
+  for(gene in top_genes) {
+    gene_data <- data.frame(
+      gene = gene,
+      sex = sex_info$sex,
+      expression = expr_sex[gene, ]
+    )
+    plot_data <- rbind(plot_data, gene_data)
+  }
+  
+  ggplot(plot_data, aes(x = sex, y = expression, fill = sex)) +
+    geom_boxplot() +
+    geom_jitter(width = 0.2, alpha = 0.3) +
+    facet_wrap(~gene, scales = "free_y", ncol = 3) +
+    labs(title = "Top 5 Differentially Expressed Genes by Sex",
+         x = "Sex", y = "VST Expression") +
+    scale_fill_manual(values = c("Male" = "#4A90E2", "Female" = "#E24A90")) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+```
+
+
+```{r}
+# Check for sex chromosome genes among significant results
+if(sum(sex_test_results$significant) > 0) {
+  # Common sex chromosome genes
+  sex_chr_genes <- c("XIST", "DDX3Y", "RPS4Y1", "KDM5D", "UTY", 
+                     "ZFY", "EIF1AY", "TMSB4Y", "USP9Y")
+  
+  sig_sex_chr <- sex_test_results %>% 
+    filter(significant & gene %in% sex_chr_genes)
+  
+  if(nrow(sig_sex_chr) > 0) {
+    cat("Sex chromosome genes among significant results:\n")
+    print(sig_sex_chr %>% arrange(p_adj))
+  } else {
+    cat("No known sex chromosome genes in significant results\n")
+  }
+}
+```
+
+
+########Investigation 6
 
 ```{r}
 # Subset to Samples(Patients) with Stage Info
