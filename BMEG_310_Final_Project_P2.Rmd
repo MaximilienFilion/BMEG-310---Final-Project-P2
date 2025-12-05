@@ -312,10 +312,6 @@ cat("\n")
 
 ```
 ###### Iinvestigation 3
-
-###### Iinvestigation 4
-
-########Investigation 5
 ```{r}
 #Clean Ensembl IDs and map to gene symbols
 
@@ -354,9 +350,116 @@ rownames(z_df) <- z_df$hgnc_symbol
 z_scores_symbol <- as.matrix(z_df[, -c(ncol(z_df)-1, ncol(z_df))])
 
 cat("Genes with symbols:", nrow(expr_symbol), "\n\n")
+```
+```{r}
+# Subset to Samples(Patients) with Stage Info
 
+# Extract patient IDs and match to clinical data
+rnaseq_patient_ids <- substr(gsub("\\.", "-", colnames(expr_symbol)), 1, 12)
+
+age_info <- data.frame(
+  sample_id = colnames(expr_symbol),
+  patient_id = rnaseq_patient_ids
+) %>%
+  left_join(
+    data_clinical_patient %>% 
+      dplyr::select(PATIENT_ID, AGE) %>%
+      rename(patient_id = PATIENT_ID, age = AGE),
+    by = "patient_id"
+  ) %>%
+  filter(!is.na(age) & age != "")
+
+age_info$age <- cut(
+  age_info$age,
+  breaks = c(0, 49, 59, 69, 79, 100),
+  labels = c("<49", "50-59", "60-69", "70-79", ">80")
+)
+
+# Subset expression matrices
+expr_staged <- expr_symbol[, age_info$sample_id]
+z_scores_staged <- z_scores_symbol[, age_info$sample_id]
+
+cat("Samples with age:", nrow(age_info), "\n")
+print(table(age_info$age))
+cat("\n")
+```
+```{r}
+#Select top 500 Most Variable genes
+
+# Calculate variance for each gene
+gene_variance <- apply(expr_staged, 1, var)
+
+# Select top 500
+top500_genes <- names(sort(gene_variance, decreasing = TRUE)[1:500])
+
+cat("Top 500 genes selected\n")
+cat("Variance range:", round(range(gene_variance[top500_genes]), 2), "\n\n")
+
+#This shows how expressed each gene is, and take the top 500 genes that have the largest variance in expression. 
+#Each patient expresses a certain amount of each gene,
+#so the highest variance is intersting as something might be happening, Could be indicative. 
+```
+```{r}
+#ANOVA Test by age
+
+# Test if genes differ across stages
+anova_results_age <- data.frame(
+  gene = top500_genes,
+  p_value = sapply(top500_genes, function(g) {
+    fit <- aov(expr_staged[g, ] ~ factor(age_info$age))
+    summary(fit)[[1]]["Pr(>F)"][1, 1]
+  })
+)
 ```
 
+```{r}
+#Multiple testing correction
+anova_results_age$p_adj <- p.adjust(anova_results_age$p_value, method = "BH")
+anova_results_age$significant <- anova_results_age$p_adj < 0.05
+
+cat("Significant genes (FDR < 0.05):", sum(anova_results_age$significant), "\n")
+print(anova_results_age %>% arrange(p_adj) %>% head(10))
+cat("\n")
+```
+```{r}
+# After ANOVA results, specifically test GZMB
+if("GZMB" %in% rownames(expr_staged)) {
+  gzmb_test <- data.frame(
+    age = age_info$age,
+    expression = expr_staged["GZMB", ]
+  )
+  
+  # Statistical test
+  gzmb_anova <- aov(expression ~ age, data = gzmb_test)
+  print("GZMB by Age Group:")
+  print(summary(gzmb_anova))
+  
+  # Post-hoc test to compare >80 vs others
+  gzmb_posthoc <- TukeyHSD(gzmb_anova)
+  print(gzmb_posthoc)
+  
+  # Mean expression by age group
+  print(gzmb_test %>% group_by(age) %>% 
+        summarise(mean_expr = mean(expression), 
+                  sd_expr = sd(expression)))
+}
+```
+```{r}
+# Boxplot for GZMB across age groups
+if("GZMB" %in% rownames(expr_staged)) {
+  ggplot(gzmb_test, aes(x = age, y = expression, fill = age)) +
+    geom_boxplot() +
+    geom_jitter(width = 0.2, alpha = 0.3) +
+    labs(title = "GZMB Expression by Age Group",
+         x = "Age Group", y = "VST Expression") +
+    theme_minimal()
+}
+```
+
+
+###### Iinvestigation 4
+
+########Investigation 5
 
 ```{r}
 # Subset to Samples(Patients) with Stage Info
