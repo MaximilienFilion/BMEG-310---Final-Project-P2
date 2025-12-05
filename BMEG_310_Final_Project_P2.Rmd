@@ -86,6 +86,7 @@ data_clinical_patient <- data_clinical_patient[data_clinical_patient$PATIENT_ID 
 data_mutations <- data_mutations[substr(data_mutations$Tumor_Sample_Barcode, 1, 12) %in% common_patients, ]
 ```
 
+
 <!-- # Merge the different ensembl version in the RNAseq dataframe -->
 <!-- ```{r} -->
 <!-- # Strip the ensembl version -->
@@ -218,22 +219,24 @@ cat("Z-scored VST range:", range(z_vst, na.rm = TRUE), "\n\n")
 # ============================================================================
 
 # Filter the most variable genes 
-2000 most variable genes were selected. 2000 is an arbitrary number that was chosen to reduce the size of the dataset. Running distance on 60660 observations was too computationally intensive.
+Running distance on 60660 observations was too computationally intensive. We decided to only keep the top 3000 genes since PCA will explain only part of the variance and variance will be mostly explained by those highly variable 3000 genes. It was chosen arbitrarily 
+
 ```{r}
-# compute variance
-gene_vars <- apply(z_vst, 1, var)
+# compute variance on raw data
+gene_vars <- apply(normalized_counts, 1, var)
+
 
 #Rank the genes by variance
-top_genes <- names(sort(gene_vars, decreasing = TRUE))[1:2000]
+top_genes <- names(sort(gene_vars, decreasing = TRUE))[1:3000]
 
-# Create a subset matrix with the top 2000 genes
+# Create a subset matrix with the top 3000 genes
 expr_z_top <- z_vst[top_genes, ]
 ```
 
 
 # Plot PCA and look for distinct group
 ```{r}
-pca_res <- prcomp(t(expr_z_top), scale = FALSE)  # already Z-scored, so scale=FALSE
+pca_res <- prcomp(t(expr_z_top), scale = TRUE)
 
 # Percentage variance explained
 pve <- (pca_res$sdev^2) / sum(pca_res$sdev^2)
@@ -254,64 +257,114 @@ pca_df <- data.frame(
 
 ggplot(pca_df, aes(x = PC1, y = PC2)) +
   geom_point(alpha = 0.7) +
-  ggtitle("PCA of KIRC Patients (Top 2000 Variance Genes)") +
+  ggtitle("PCA of KIRC Patients (Top 3000 Variance Genes)") +
   xlab(paste0("PC1 (", round(pve[1] * 100, 1), "%)")) +
   ylab(paste0("PC2 (", round(pve[2] * 100, 1), "%)")) +
   theme_minimal()
 ```
-
-# Compute distance and Apply clustering on expression data
+# Select PCs explaining 80% variance
 ```{r}
-dist_mat <- dist(t(expr_z_top), method = "euclidean")
+# Compute cumulative variance explained
+cumvar <- cumsum(pve)
+
+# Find how many PCs are needed to reach ≥80% variance
+Top_pc <- which(cumvar >= 0.80)[1]
+cat("Number of PCs explaining ≥80% variance:", k, "\n")
+```
+
+# Extract the PC score 
+```{r}
+# PCA scores (samples × PCs)
+pc_scores <- pca_res$x[, 1:Top_pc]
+```
+
+
+# Cluster on the main PCs
+```{r}
+# Compute distance on reduced PC space
+dist_mat <- dist(pc_scores)
+
+# Ward's hierarchical clustering
 hc <- hclust(dist_mat, method = "ward.D2")
 
-plot(hc, labels = FALSE, hang = -1)
+# Plot dendrogram
+plot(hc, labels = FALSE, main = "Hierarchical Clustering on PCs (80% variance)")
+rect.hclust(hc, k = 6, border = 2)
 ```
 
+#Cutting Dendogram and 
+We decided to cut the dendrogram at 6 since there is 6 subtypes of KIRC
 
-# Plot the distance heatmap
 ```{r}
-pheatmap(
-  t(expr_z_top),
-  show_rownames = FALSE,
-  show_colnames = FALSE,
-  clustering_method = "ward.D2"
-)
+clusters <- cutree(hc, k = 6)
+table(clusters)
 ```
-#Cutting Dendogram
+
+# ============================================================================
+# INVESTIGATION 2: Survival across the patient clusters is different. 
+# RQ 2.2: Do expression-based clusters differ in patient outcomes?
+# ============================================================================
+
+# Create a dataframe that contains the DSS and the cluster labels. Rowname is patient ID
 ```{r}
-# Define Patient Clusters from Dendrogram
-# Cut the dendogram to assign patients to distinct clusters
-
-# Silhouette Method (Quality of clustering)
-# Higher silhouette = better separation between clusters
-p2 <- fviz_nbclust(t(expr_z_top), FUN = hcut, method = "silhouette", k.max = 10) +
-  ggtitle("Silhouette Method: Optimal Number of Clusters") +
-  geom_vline(xintercept = 6, linetype = "dashed", color = "red")
-print(p2)
-```
-```{r}
-# Cut the Dendrogram into k=6 Clusters
-
-# Cut dendrogram at k=6
-k <- 6
-patient_clusters <- cutree(hc, k = k)
-
-# Create a dataframe with cluster assignments
-cluster_df <- data.frame(
-  PATIENT_ID = names(patient_clusters),
-  Cluster = patient_clusters,
-  Cluster_Label = paste0("C", patient_clusters),
-  stringsAsFactors = FALSE
+# Create a dataframe that contains the cluster and the patient ID
+clustering_data <- data.frame(
+  clusters = clusters,
+  PATIENT_ID = names(clusters)
 )
 
-# Summary of cluster sizes
-cat("Cluster sizes:\n")
-print(table(cluster_df$Cluster_Label))
-cat("\n")
+# transform clustering data into standard patient ID
+clustering_data$PATIENT_ID <- gsub("\\.", "-", substr(clustering_data$PATIENT_ID, 1, 12))
 
+rownames(clustering_data) <- NULL
+
+clinical_data_subset <- data_clinical_patient[
+ data_clinical_patient$PATIENT_ID %in% clustering_data$PATIENT_ID,
+ c("PATIENT_ID", "DSS_STATUS", "DSS_MONTHS")
+]
+
+# transform the DSS status to binary
+clinical_data_subset$DSS_STATUS <- substr(clinical_data_subset$DSS_STATUS, 1, 1)
+
+merged_data <- merge(
+ clustering_data,
+ clinical_data_subset,
+ by = "PATIENT_ID",
+ all.x = FALSE,
+ all.y = FALSE
+)
 ```
-###### Iinvestigation 3
+
+
+# Survival Analysis Across different clusters
+```{r}
+surv_obj_ward_DSS <- Surv(time = as.numeric(merged_data$DSS_MONTHS), event= as.numeric(merged_data$DSS_STATUS))
+
+# KM plot for ward.D2 clustering
+ward_d2_DSS <- surv_fit(surv_obj_ward_DSS ~ clusters, data = merged_data)
+ward_d2_DSS_plot <- ggsurvplot(ward_d2_DSS,
+           data = merged_data,
+           pval = TRUE,
+           conf.int = TRUE,
+           title = "Disease Specific Survival for Identified Ward.D2 Hierarchical Clusters",
+           xlab = "Time (Months)",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal(base_size = 14))
+
+ward_d2_DSS_plot
+```
+
+# ============================================================================
+# INVESTIGATION 3: Check DE across clusters
+# RQ 2.2: What gene vary across clusters? Are they Significative of KIRC subtype?
+# ============================================================================
+
+#
+
+# ============================================================================
+# INVESTIGATION 3: 
+# RQ 2.3:
+# ============================================================================
 ```{r}
 #Clean Ensembl IDs and map to gene symbols
 
