@@ -19,6 +19,19 @@ output:
 
 # Load required libraries
 ```{r, results='hide'}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("org.Hs.eg.db")
+# BiocManager::install("AnnotationDbi") 
+
+# Install clusterProfiler properly
+#BiocManager::install("clusterProfiler", ask = FALSE, update = FALSE)
+
+#BiocManager::install("DOSE")
+#BiocManager::install("pathview") 
+
+library(clusterProfiler)
+library(AnnotationDbi)
 library(DESeq2)
 library(pheatmap)
 library(ggplot2)
@@ -26,7 +39,7 @@ library(cluster)
 library(survival)
 library(survminer)
 #library(clusterProfiler)
-#library(org.Hs.eg.db)
+library(org.Hs.eg.db) # Contains human gene annotations
 library(dplyr)
 library(tibble)
 library(biomaRt)   
@@ -50,6 +63,12 @@ data_clinical_patient <- read.delim("data_clinical_patient.txt", header = TRUE, 
 data_mutations <- read.delim("data_mutations.txt", header = TRUE, sep = "\t", stringsAsFactors = FALSE)
 ```
 
+```{r}
+head(RNAseq_KIRC)
+head(data_clinical_patient)
+```
+
+
 # Creates a dataframe containing all the patients common to the three datasets.
 will be used in downstream applications.
 ```{r}
@@ -57,7 +76,7 @@ will be used in downstream applications.
 rna_patient_ids <- gsub("\\.", "-", substr(colnames(RNAseq_KIRC), 1, 12))
 # Data_clinical_patient dataset
 clinical_patient_ids <- unique(data_clinical_patient$PATIENT_ID)
-# Data_mutation dataset
+# Data_mutation datasetd
 mutation_patient_ids <- unique(substr(data_mutations$Tumor_Sample_Barcode, 1, 12))
 # Common patients
 common_patients <- Reduce(intersect, list(rna_patient_ids,
@@ -509,169 +528,262 @@ if("GZMB" %in% rownames(expr_staged)) {
 }
 ```
 
-
-###### Iinvestigation 5
-
+####### Investigation 5
 ```{r}
-# Subset to Samples (Patients) with Sex Info
+## Get Initial Count Matrix
+# Create count matrix (genes as rows, samples as columns)
+count_matrix <- as.matrix(RNAseq_KIRC[, -1])  # Remove gene name column
+# Assuming your Ensembl IDs are in the first column of RNAseq_KIRC
+ensemble_ids <- RNAseq_KIRC[, 1]
+# Fix common Ensembl ID format issue (remove version number like ".1")
+# This ensures a better match rate with the annotation package
+ensemble_ids_clean <- sub("\\.\\d+$", "", ensemble_ids)
+rownames(count_matrix) <- ensemble_ids_clean
 
-# Extract patient IDs and match to clinical data
-rnaseq_patient_ids <- substr(gsub("\\.", "-", colnames(expr_symbol)), 1, 12)
+cat("Initial count matrix dimensions (by Ensembl ID):", dim(count_matrix), "\n")
 
-sex_info <- data.frame(
-  sample_id = colnames(expr_symbol),
-  patient_id = rnaseq_patient_ids
-) %>%
-  left_join(
-    data_clinical_patient %>% 
-      dplyr::select(PATIENT_ID, SEX) %>%
-      rename(patient_id = PATIENT_ID, sex = SEX),
-    by = "patient_id"
-  ) %>%
-  filter(!is.na(sex) & sex != "")
-
-# Subset expression matrices
-expr_sex <- expr_symbol[, sex_info$sample_id]
-z_scores_sex <- z_scores_symbol[, sex_info$sample_id]
-
-cat("Samples with sex information:", nrow(sex_info), "\n")
-print(table(sex_info$sex))
-cat("\n")
-```
-```{r}
-# Select top 500 Most Variable genes
-
-# Calculate variance for each gene
-gene_variance <- apply(expr_sex, 1, var)
-
-# Select top 500
-top500_genes <- names(sort(gene_variance, decreasing = TRUE)[1:500])
-
-cat("Top 500 genes selected\n")
-cat("Variance range:", round(range(gene_variance[top500_genes]), 2), "\n\n")
-```
-```{r}
-# T-test by sex
-
-# Test if genes differ by sex (using t-test for two groups)
-sex_test_results <- data.frame(
-  gene = top500_genes,
-  p_value = sapply(top500_genes, function(g) {
-    male_expr <- expr_sex[g, sex_info$sex == "Male"]
-    female_expr <- expr_sex[g, sex_info$sex == "Female"]
-    
-    # Use t-test for two groups
-    test <- t.test(male_expr, female_expr)
-    test$p.value
-  }),
-  mean_diff = sapply(top500_genes, function(g) {
-    male_mean <- mean(expr_sex[g, sex_info$sex == "Male"])
-    female_mean <- mean(expr_sex[g, sex_info$sex == "Female"])
-    male_mean - female_mean
-  }),
-  fold_change = sapply(top500_genes, function(g) {
-    male_mean <- mean(expr_sex[g, sex_info$sex == "Male"])
-    female_mean <- mean(expr_sex[g, sex_info$sex == "Female"])
-    male_mean / female_mean
-  })
+# Map Ensembl IDs to Gene Symbols
+gene_map <- select(
+  org.Hs.eg.db,
+  keys = rownames(count_matrix),
+  columns = c("SYMBOL"),
+  keytype = "ENSEMBL"
 )
+
+# Filter out Ensembl IDs that didn't map to a Gene Symbol
+gene_map <- gene_map %>% filter(!is.na(SYMBOL))
+
+# Handle one-to-many mappings (Multiple Ensembl IDs map to one Symbol)
+# For simplicity, we keep the first occurrence of a symbol
+gene_map <- gene_map %>%
+  distinct(ENSEMBL, .keep_all = TRUE) %>% # Keep one SYMBOL per ENSEMBL
+  distinct(SYMBOL, .keep_all = TRUE) # Keep one row per unique SYMBOL
+
+cat("Number of unique Ensembl IDs mapped to a unique Symbol:", nrow(gene_map), "\n")
+
+# Filter and Rename the Count Matrix
+
+# Filter the count matrix to include only mapped genes
+mapped_count_matrix <- count_matrix[gene_map$ENSEMBL, ]
+
+# Assign the Gene Symbols as row names
+rownames(mapped_count_matrix) <- gene_map$SYMBOL
+
+cat("Final count matrix dimensions (by Gene Symbol):", dim(mapped_count_matrix), "\n")
 ```
 
 ```{r}
-# Multiple testing correction
-sex_test_results$p_adj <- p.adjust(sex_test_results$p_value, method = "BH")
-sex_test_results$significant <- sex_test_results$p_adj < 0.05
+# Filter out X and Y Chromosome Genes ---
 
-cat("Significant genes (FDR < 0.05):", sum(sex_test_results$significant), "\n")
-cat("Proportion of top 500 genes significant:", 
-    round(sum(sex_test_results$significant)/500 * 100, 2), "%\n\n")
+# 1. Get chromosome information for the current gene set
+# Note: Using Gene Symbols as keytype for a simpler mapping
+gene_chr_map <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = rownames(mapped_count_matrix),
+  columns = c("CHR"),
+  keytype = "SYMBOL"
+)
 
-cat("Top 10 most significant genes by sex:\n")
-print(sex_test_results %>% arrange(p_adj) %>% head(10))
+# 2. Identify Autosomal Genes (Chromosome 1-22)
+# Exclude X, Y, MT (mitochondrial), and any unassigned/unknown chromosomes (NA)
+# Autosomal chromosomes are '1' through '22'.
+# We must first filter out NAs from the mapping step.
+gene_chr_map <- gene_chr_map %>% filter(!is.na(CHR))
+
+# Filter for only autosomes (1-22)
+autosomal_gene_map <- gene_chr_map %>%
+  filter(CHR %in% as.character(1:22)) %>%
+  distinct(SYMBOL) # Keep only the unique autosomal symbols
+
+# 3. Filter the count matrix to include only autosomal genes
+autosomal_count_matrix <- mapped_count_matrix[autosomal_gene_map$SYMBOL, ]
+
+cat("Number of genes removed (X, Y, MT, unassigned):",
+    nrow(mapped_count_matrix) - nrow(autosomal_count_matrix), "\n")
+cat("Count matrix dimensions (Autosomal Genes x Samples):",
+    dim(autosomal_count_matrix), "\n")
+
+# Reassign the count matrix variable to be used in the next step
+count_data_to_filter <- autosomal_count_matrix
+```
+
+
+```{r}
+# Ensure the sample order in the matrix and metadata match perfectly
+# Filter the symbol-mapped counts to match samples in metadata
+# Use the autosomal count matrix
+count_data_final <- count_data_to_filter[, sample_metadata$sample_id]
+col_data_final <- sample_metadata
+...
+
+cat("Count matrix dimensions (Genes x Samples):", dim(count_data_final), "\n")
+cat("Metadata dimensions (Samples x Variables):", dim(col_data_final), "\n")
+cat("Samples included in DESeq2 analysis:", nrow(col_data_final), "\n")
+print(table(col_data_final$sex))
 cat("\n")
-```
-```{r}
-# Summary statistics for significant genes
-if(sum(sex_test_results$significant) > 0) {
-  sig_genes <- sex_test_results %>% filter(significant)
-  
-  cat("Summary of significant genes:\n")
-  cat("Higher in males:", sum(sig_genes$mean_diff > 0), "\n")
-  cat("Higher in females:", sum(sig_genes$mean_diff < 0), "\n")
-  cat("Mean absolute fold change:", round(mean(abs(log2(sig_genes$fold_change))), 3), "\n\n")
-}
-```
 
-```{r}
-# Volcano plot: visualize differential expression by sex
-sex_test_results$log2FC <- log2(sex_test_results$fold_change)
-sex_test_results$neg_log10_p <- -log10(sex_test_results$p_adj)
+# 1c. Create the DESeq2 object with the design formula: ~ sex
+dds_sex <- DESeqDataSetFromMatrix(
+  countData = count_data_final, # Now defined correctly
+  colData = col_data_final,
+  design = ~ sex
+)
 
-ggplot(sex_test_results, aes(x = log2FC, y = neg_log10_p, 
-                              color = significant)) +
-  geom_point(alpha = 0.6) +
-  scale_color_manual(values = c("grey", "red")) +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
-  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", color = "blue") +
-  labs(title = "Differential Gene Expression by Sex",
-       subtitle = "Top 500 Most Variable Genes",
-       x = "Log2 Fold Change (Male/Female)",
-       y = "-Log10 Adjusted P-value",
-       color = "Significant (FDR < 0.05)") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
+# Pre-filtering to remove genes with very low counts
+# Remove more genes for efficiency and power
+# Set the new minimum sample percentage (e.g., 50%)
+min_percent_samples <- 0.50 
+# Calculate the minimum number of samples required
+min_samps <- ceiling(min_percent_samples * ncol(dds_sex))
+# Filtering criteria: require >=10 counts in at least 'min_samps' samples
+keep <- rowSums(counts(dds_sex) >= 10) >= min_samps
+dds_sex <- dds_sex[keep,]
+cat(sum(!keep), "genes removed due to low counts (using 50% sample cutoff).\n")
+cat("Remaining genes for DESeq2 analysis:", nrow(dds_sex), "\n")
 ```
 
 ```{r}
-# Boxplots for top 5 most significant genes
-if(sum(sex_test_results$significant) > 0) {
-  top_genes <- sex_test_results %>% 
-    filter(significant) %>% 
-    arrange(p_adj) %>% 
-    head(5) %>% 
-    pull(gene)
-  
-  # Prepare data for plotting
-  plot_data <- data.frame()
-  for(gene in top_genes) {
-    gene_data <- data.frame(
-      gene = gene,
-      sex = sex_info$sex,
-      expression = expr_sex[gene, ]
-    )
-    plot_data <- rbind(plot_data, gene_data)
-  }
-  
-  ggplot(plot_data, aes(x = sex, y = expression, fill = sex)) +
-    geom_boxplot() +
-    geom_jitter(width = 0.2, alpha = 0.3) +
-    facet_wrap(~gene, scales = "free_y", ncol = 3) +
-    labs(title = "Top 5 Differentially Expressed Genes by Sex",
-         x = "Sex", y = "VST Expression") +
-    scale_fill_manual(values = c("Male" = "#4A90E2", "Female" = "#E24A90")) +
-    theme_minimal() +
-    theme(legend.position = "bottom")
-}
+# Run DESeq2
+cat("Running DESeq analysis...\n")
+dds_sex <- DESeq(dds_sex)
+cat("DESeq analysis complete.\n\n")
+
+# Extract the results: comparing the two levels of the 'sex' variable
+# The comparison is 'Female' vs 'Male' if Female is the second factor level
+results_sex <- results(dds_sex, name="sex_Male_vs_Female") # Adjust the 'name' based on your factor levels
+
+# Filter and format results
+results_df <- as.data.frame(results_sex) %>%
+  rownames_to_column("gene") %>%
+  filter(!is.na(padj)) %>% # Remove genes with NA p-values (often due to filtering or extreme values)
+  arrange(padj)
+
+# Get the count of significant genes
+significant_genes_deseq <- sum(results_df$padj < 0.05)
+cat("Significant genes (FDR < 0.05) via DESeq2:", significant_genes_deseq, "\n")
+cat("Top 10 most differentially expressed genes by sex:\n")
+print(head(results_df, 10))
 ```
 
 
 ```{r}
-# Check for sex chromosome genes among significant results
-if(sum(sex_test_results$significant) > 0) {
-  # Common sex chromosome genes
-  sex_chr_genes <- c("XIST", "DDX3Y", "RPS4Y1", "KDM5D", "UTY", 
-                     "ZFY", "EIF1AY", "TMSB4Y", "USP9Y")
+# Filter and format results
+results_df <- as.data.frame(results_sex) %>%
+  rownames_to_column("gene") %>%
+  filter(!is.na(padj)) %>% # Remove genes with NA p-values
   
-  sig_sex_chr <- sex_test_results %>% 
-    filter(significant & gene %in% sex_chr_genes)
-  
-  if(nrow(sig_sex_chr) > 0) {
-    cat("Sex chromosome genes among significant results:\n")
-    print(sig_sex_chr %>% arrange(p_adj))
-  } else {
-    cat("No known sex chromosome genes in significant results\n")
-  }
-}
+  # Sort by the absolute value of log2FoldChange for max variability
+  arrange(desc(abs(log2FoldChange)))
+
+# Get the count of significant genes
+# Keep this part to assess DE significance
+significant_genes_deseq <- sum(results_df$padj < 0.05)
+cat("Significant autosomal genes (FDR < 0.05) via DESeq2:", significant_genes_deseq, "\n")
+cat("Top 10 autosomal genes exhibiting the greatest variability in expression (by absolute log2FC):\n")
+print(head(results_df, 10))
+```
+```{r}
+# Filter for significant genes (FDR < 0.05) first, then sort by LFC magnitude
+top_variability_genes <- results_df %>%
+  filter(padj < 0.05) %>%
+  # Arrange by the absolute log2FoldChange in descending order
+  arrange(desc(abs(log2FoldChange)))
+
+cat("Top 10 Autosomal Genes exhibiting the Greatest Variability (Highest |log2FC|):\n")
+print(head(top_variability_genes, 10))
+```
+```{r}
+# Get the list of significant Gene Symbols (your 2106 genes)
+sig_genes_symbols <- results_df %>%
+  filter(padj < 0.05) %>%
+  pull(gene)
+
+# Convert Gene Symbols to Entrez IDs
+sig_genes_entrez <- bitr(
+  sig_genes_symbols,
+  fromType = "SYMBOL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+) %>%
+  pull(ENTREZID)
+
+cat("Number of unique significant autosomal genes successfully mapped to Entrez ID:", length(sig_genes_entrez), "\n")
+```
+
+```{r}
+## GO Biological Process (BP) Enrichment
+go_results <- enrichGO(
+  gene          = sig_genes_entrez,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "ENTREZID",
+  ont           = "BP", # Biological Process
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05,
+  readable      = TRUE
+)
+
+## KEGG Pathway Enrichment
+kegg_results <- enrichKEGG(
+  gene          = sig_genes_entrez,
+  organism      = 'hsa',
+  keyType       = "ncbi-geneid",  # make sure matches your IDs
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05,
+  use_internal_data = FALSE        # uses internal annotation instead of online
+)
+kegg_results <- setReadable(kegg_results, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+
+
+# Convert KEGG Entrez IDs to Gene Symbols for readability
+kegg_results <- setReadable(kegg_results, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+
+cat("\n--- Top 10 Enriched GO Biological Processes ---\n")
+print(head(as.data.frame(go_results), 10))
+
+cat("\n--- Top 10 Enriched KEGG Pathways ---\n")
+print(head(as.data.frame(kegg_results), 10))
+```
+
+```{r}
+# List genes contributing to top GO term
+top_go_genes <- strsplit(go_results@result$geneID[1], "/")[[1]]
+top_go_genes
+
+```
+
+
+```{r}
+# 1. Select the top 20 most significant genes (by padj)
+top_20_genes <- results_df %>%
+  filter(padj < 0.05) %>%
+  arrange(padj) %>%
+  head(20) 
+
+# 2. Get normalized, transformed counts from your DESeq2 object (dds_sex)
+# Assuming dds_sex contains only autosomal genes after your filtering step
+vsd <- vst(dds_sex, blind = FALSE)
+vsd_matrix <- assay(vsd)
+
+# 3. Filter the VSD matrix for the top genes and prepare annotation
+top_20_vsd <- vsd_matrix[top_20_genes$gene, ]
+
+
+# Create column annotation for sex
+annotation_col <- as.data.frame(colData(dds_sex)["sex"])
+rownames(annotation_col) <- rownames(colData(dds_sex))
+
+# 4. Generate the Heatmap
+pheatmap::pheatmap(
+  top_20_vsd,
+  cluster_rows = TRUE,
+  show_rownames = TRUE,
+  cluster_cols = TRUE,
+  annotation_col = annotation_col,
+  scale = "row",
+  main = "Heatmap of Top 50 Autosomal Sex-Biased Genes",
+  show_colnames = FALSE)
 ```
 
 
