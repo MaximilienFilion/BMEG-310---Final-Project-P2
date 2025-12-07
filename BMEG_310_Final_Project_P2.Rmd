@@ -430,8 +430,8 @@ cat("Final count matrix dimensions (by Gene Symbol):", dim(mapped_count_matrix),
 
 ```{r}
 # Recode age (make under80 the reference level)
-age_info$age_group <- ifelse(age_info$age == "0-79", "under80", "80plus")
-age_info$age_group <- factor(age_info$age_group, levels = c("under80", "80plus"))
+age_info$age_group <- ifelse(age_info$age == "0-79", "under 80", "over 80")
+age_info$age_group <- factor(age_info$age_group, levels = c("under 80", "over 80"))
 
 ```
 
@@ -466,10 +466,18 @@ dds <- DESeqDataSetFromMatrix(
 ```{r}
 # Run DESeq2
 dds <- DESeq(dds)
-res <- results(dds, contrast = c("age_group", "80plus", "under80"))
+res <- results(dds, contrast = c("age_group", "over 80", "under 80"))
 
 ```
-
+```{r}
+# Option 3: Super simple summary
+if("ACSL6" %in% rownames(res)) {
+  cat("ACSL6 Results:\n")
+  cat("Log2 Fold Change:", round(res["ACSL6", "log2FoldChange"], 3), "\n")
+  cat("P-value:", formatC(res["ACSL6", "pvalue"], format = "e", digits = 2), "\n")
+  cat("Adjusted P-value:", formatC(res["ACSL6", "padj"], format = "e", digits = 2), "\n")
+}
+```
 
 ```{r}
 if("ACSL6" %in% rownames(res)) {
@@ -498,23 +506,12 @@ ggplot(ACSL6_data, aes(x = age_group, y = expression, fill = age_group)) +
 
 ```
 ```{r}
-# Simple violin plot
-ggplot(ACSL6_data, aes(x = age_group, y = expression, fill = age_group)) +
-  geom_violin() +
-  geom_boxplot(width = 0.2) +
-  labs(title = "ACSL6 Expression by Age Group",
-       x = "Age Group", 
-       y = "Expression") +
-  theme_bw()
+ggplot(df_acsl6, aes(x = age_info$age_raw, y = expr)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess", se = TRUE, color = "blue") +
+  labs(title = "ACSL6 Expression vs Age", x = "Age", y = "VST Expression") +
+  theme_minimal()
 
-# Summary statistics
-ACSL6_data %>%
-  group_by(age_group) %>%
-  summarize(
-    n = n(),
-    mean = mean(expression),
-    median = median(expression)
-  )
 ```
 
 
