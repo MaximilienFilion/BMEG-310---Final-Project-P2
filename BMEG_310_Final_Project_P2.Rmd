@@ -479,6 +479,45 @@ if("ACSL6" %in% rownames(res)) {
   print("ACSL6 not found in DESeq2 results — check symbol mapping.")
 }
 ```
+```{r}
+# Get ACSL6 expression data
+normalized_counts <- counts(dds, normalized = TRUE)
+ACSL6_data <- data.frame(
+  expression = normalized_counts["ACSL6", ],
+  age_group = dds$age_group
+)
+
+# Simple boxplot
+ggplot(ACSL6_data, aes(x = age_group, y = expression, fill = age_group)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.2, alpha = 0.5) +
+  labs(title = "ACSL6 Expression by Age Group",
+       x = "Age Group",
+       y = "Expression") +
+  theme_bw()
+
+```
+```{r}
+# Simple violin plot
+ggplot(ACSL6_data, aes(x = age_group, y = expression, fill = age_group)) +
+  geom_violin() +
+  geom_boxplot(width = 0.2) +
+  labs(title = "ACSL6 Expression by Age Group",
+       x = "Age Group", 
+       y = "Expression") +
+  theme_bw()
+
+# Summary statistics
+ACSL6_data %>%
+  group_by(age_group) %>%
+  summarize(
+    n = n(),
+    mean = mean(expression),
+    median = median(expression)
+  )
+```
+
+
 
 ####### Investigation 5
 
