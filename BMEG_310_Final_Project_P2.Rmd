@@ -513,7 +513,7 @@ ggplot(ACSL6_data, aes(x = age_group, y = expression, fill = age_group)) +
 ####### Investigation 5
 
 ```{r}
-# Filter out X and Y Chromosome Genes ---
+# Filter out X and Y Chromosome Genes 
 
 # Get chromosome information for the current gene set
 # Note: Using Gene Symbols as keytype for a simpler mapping
@@ -548,8 +548,27 @@ count_data_to_filter <- autosomal_count_matrix
 ```
 
 ```{r}
+# CHeck that sex-chromosome linked genes were removed
+# Get chromosome mapping for the filtered (autosomal) count matrix
+filtered_chr_map <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = rownames(count_data_to_filter),
+  columns = c("CHR"),
+  keytype = "SYMBOL"
+)
+
+# Count how many genes map to X or Y
+sum(filtered_chr_map$CHR %in% c("X", "Y"))
+
+# List any genes on X or Y (should be empty)
+filtered_chr_map %>% filter(CHR %in% c("X", "Y"))
+# if output is empty then no x/y genes remain
+```
+
+
+```{r}
 # Subset the mapped count matrix to samples that have sex information
-counts_sub_sex <- mapped_count_matrix[, sex_info$sample_id]
+counts_sub_sex <- count_data_to_filter[, sex_info$sample_id]
 
 # Check dimensions
 cat("Counts subset for sex comparison:", dim(counts_sub_sex), "\n")
@@ -617,7 +636,7 @@ res_sex <- results(dds_sex, contrast = c("sex", "Female", "Male"))
 res_sex <- res_sex[order(res_sex$padj), ]
 
 # View top genes
-head(res_sex)
+head(res_sex, 10)
 
 # Optional: convert to a data frame for easier manipulation
 res_df <- as.data.frame(res_sex)
@@ -626,10 +645,30 @@ res_df$gene <- rownames(res_df)
 # Filter for significantly DE genes (FDR < 0.05)
 sig_res <- res_df[!is.na(res_df$padj) & res_df$padj < 0.05, ]
 
-# Examine top significant genes
-head(sig_res[order(sig_res$log2FoldChange, decreasing = TRUE), ])
+# Order by absolute log2 fold change, largest first
+sig_res_absFC <- sig_res[order(abs(sig_res$log2FoldChange), decreasing = TRUE), ]
+
+#console shows top most significant genes
+#df shows most differentially expressed genes (by log2fc)
+# View top 10 genes with largest absolute log2FC
+head(sig_res_absFC, 10)
+
 ```
 
+```{r}
+# Vector of genes to inspect
+genes_of_interest <- c("CCDC146", "UGT1A6")
+
+# Subset DESeq2 results for these genes
+res_subset <- res_sex[rownames(res_sex) %in% genes_of_interest, ]
+
+# If you want to see it as a clean data frame
+res_subset_df <- as.data.frame(res_subset)
+res_subset_df$gene <- rownames(res_subset_df)  # add gene column for clarity
+
+# Print results
+print(res_subset_df)
+```
 
 
 ########Investigation 6
