@@ -6,9 +6,9 @@ author:
 - "Monica Mihailescu - 47409289 "
 date: "2025-11-17"
 output:
-  pdf_document: default
-  html_document: default
   word_document: default
+  html_document: default
+  pdf_document: default
 ---
 # ============================================================================
 # RNA-seq Analysis Template: Clustering and Differential Expression
@@ -737,6 +737,55 @@ for(comp_name in names(comparisons)) {
 # INVESTIGATION 4: 
 # RQ 2.4:
 # ============================================================================
+
+
+```{r}
+## Get Initial Count Matrix
+# Create count matrix (genes as rows, samples as columns)
+count_matrix <- as.matrix(RNAseq_KIRC[, -1])  # Remove gene name column
+# Assuming your Ensembl IDs are in the first column of RNAseq_KIRC
+ensemble_ids <- RNAseq_KIRC[, 1]
+# Fix common Ensembl ID format issue (remove version number like ".1")
+# This ensures a better match rate with the annotation package
+ensemble_ids_clean <- sub("\\.\\d+$", "", ensemble_ids)
+rownames(count_matrix) <- ensemble_ids_clean
+
+cat("Initial count matrix dimensions (by Ensembl ID):", dim(count_matrix), "\n")
+
+# Map Ensembl IDs to Gene Symbols
+gene_map <- select(
+  org.Hs.eg.db,
+  keys = rownames(count_matrix),
+  columns = c("SYMBOL"),
+  keytype = "ENSEMBL"
+)
+
+# Filter out Ensembl IDs that didn't map to a Gene Symbol
+gene_map <- gene_map %>% filter(!is.na(SYMBOL))
+
+# Handle one-to-many mappings (Multiple Ensembl IDs map to one Symbol)
+# For simplicity, we keep the first occurrence of a symbol
+gene_map <- gene_map %>%
+  distinct(ENSEMBL, .keep_all = TRUE) %>% # Keep one SYMBOL per ENSEMBL
+  distinct(SYMBOL, .keep_all = TRUE) # Keep one row per unique SYMBOL
+
+cat("Number of unique Ensembl IDs mapped to a unique Symbol:", nrow(gene_map), "\n")
+
+# Filter and Rename the Count Matrix
+
+# Filter the count matrix to include only mapped genes
+mapped_count_matrix <- count_matrix[gene_map$ENSEMBL, ]
+
+# Assign the Gene Symbols as row names
+rownames(mapped_count_matrix) <- gene_map$SYMBOL
+
+cat("Final count matrix dimensions (by Gene Symbol):", dim(mapped_count_matrix), "\n")
+```
+
+
+
+
+
 ```{r}
 # Extract sample IDs from your count matrix column names
 sample_ids <- colnames(mapped_count_matrix)
