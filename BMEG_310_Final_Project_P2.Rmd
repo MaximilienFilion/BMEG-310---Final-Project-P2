@@ -6,9 +6,9 @@ author:
 - "Monica Mihailescu - 47409289 "
 date: "2025-11-17"
 output:
-  word_document: default
-  html_document: default
   pdf_document: default
+  html_document: default
+  word_document: default
 ---
 # ============================================================================
 # RNA-seq Analysis Template: Clustering and Differential Expression
@@ -738,46 +738,40 @@ for(comp_name in names(comparisons)) {
 # RQ 2.4:
 # ============================================================================
 ```{r}
-## Get Initial Count Matrix
-# Create count matrix (genes as rows, samples as columns)
-count_matrix <- as.matrix(RNAseq_KIRC[, -1])  # Remove gene name column
-# Assuming your Ensembl IDs are in the first column of RNAseq_KIRC
-ensemble_ids <- RNAseq_KIRC[, 1]
-# Fix common Ensembl ID format issue (remove version number like ".1")
-# This ensures a better match rate with the annotation package
-ensemble_ids_clean <- sub("\\.\\d+$", "", ensemble_ids)
-rownames(count_matrix) <- ensemble_ids_clean
+# Extract sample IDs from your count matrix column names
+sample_ids <- colnames(mapped_count_matrix)
 
-cat("Initial count matrix dimensions (by Ensembl ID):", dim(count_matrix), "\n")
+# Clean up sample IDs to match patient IDs (remove any extra characters)
+patient_ids <- gsub("\\.", "-", substr(sample_ids, 1, 12))
 
-# Map Ensembl IDs to Gene Symbols
-gene_map <- select(
-  org.Hs.eg.db,
-  keys = rownames(count_matrix),
-  columns = c("SYMBOL"),
-  keytype = "ENSEMBL"
+# Create age_info by matching with clinical data
+age_info <- data.frame(
+  sample_id = sample_ids,
+  patient_id = patient_ids,
+  stringsAsFactors = FALSE
 )
 
-# Filter out Ensembl IDs that didn't map to a Gene Symbol
-gene_map <- gene_map %>% filter(!is.na(SYMBOL))
+# Merge with clinical data to get age information
+age_info <- merge(
+  age_info,
+  data_clinical_patient[, c("PATIENT_ID", "AGE")], 
+  by.x = "patient_id",
+  by.y = "PATIENT_ID",
+  all.x = TRUE
+)
 
-# Handle one-to-many mappings (Multiple Ensembl IDs map to one Symbol)
-# For simplicity, we keep the first occurrence of a symbol
-gene_map <- gene_map %>%
-  distinct(ENSEMBL, .keep_all = TRUE) %>% # Keep one SYMBOL per ENSEMBL
-  distinct(SYMBOL, .keep_all = TRUE) # Keep one row per unique SYMBOL
+# Create age groups based on the AGE column
+# Categorize into "0-79" and "80+" groups
+age_info$age <- ifelse(age_info$AGE < 80, "0-79", "80+")
 
-cat("Number of unique Ensembl IDs mapped to a unique Symbol:", nrow(gene_map), "\n")
+# Recode age (make under80 the reference level)
+age_info$age_group <- ifelse(age_info$age == "0-79", "under 80", "over 80")
+age_info$age_group <- factor(age_info$age_group, levels = c("under 80", "over 80"))
 
-# Filter and Rename the Count Matrix
-
-# Filter the count matrix to include only mapped genes
-mapped_count_matrix <- count_matrix[gene_map$ENSEMBL, ]
-
-# Assign the Gene Symbols as row names
-rownames(mapped_count_matrix) <- gene_map$SYMBOL
-
-cat("Final count matrix dimensions (by Gene Symbol):", dim(mapped_count_matrix), "\n")
+# Verify the structure
+str(age_info)
+head(age_info)
+table(age_info$age_group)
 ```
 
 
@@ -901,7 +895,7 @@ count_data_to_filter <- autosomal_count_matrix
 ```
 
 ```{r}
-# CHeck that sex-chromosome linked genes were removed
+# Check that sex-chromosome linked genes were removed
 # Get chromosome mapping for the filtered (autosomal) count matrix
 filtered_chr_map <- AnnotationDbi::select(
   org.Hs.eg.db,
@@ -916,6 +910,49 @@ sum(filtered_chr_map$CHR %in% c("X", "Y"))
 # List any genes on X or Y (should be empty)
 filtered_chr_map %>% filter(CHR %in% c("X", "Y"))
 # if output is empty then no x/y genes remain
+```
+```{r}
+# Extract sample IDs from your count matrix column names
+# Use the autosomal count matrix bc filtering sex chromosomes
+sample_ids <- colnames(count_data_to_filter)
+
+# Clean up sample IDs to match patient IDs
+patient_ids <- gsub("\\.", "-", substr(sample_ids, 1, 12))
+
+# Create sex_info by matching with clinical data
+sex_info <- data.frame(
+  sample_id = sample_ids,
+  patient_id = patient_ids,
+  stringsAsFactors = FALSE
+)
+
+# Merge with clinical data to get sex information
+sex_info <- merge(
+  sex_info,
+  data_clinical_patient[, c("PATIENT_ID", "SEX")],  # Adjust "SEX" if column name differs
+  by.x = "patient_id",
+  by.y = "PATIENT_ID",
+  all.x = TRUE
+)
+
+# Rename the SEX column to lowercase for consistency
+names(sex_info)[names(sex_info) == "SEX"] <- "sex"
+
+# Filter out any missing or empty sex values
+sex_info <- sex_info %>%
+  filter(!is.na(sex) & sex != "")
+
+# Set sex as a factor with Male as reference level
+sex_info$sex <- factor(sex_info$sex, levels = c("Male", "Female"))
+
+# Verify the structure
+str(sex_info)
+head(sex_info)
+table(sex_info$sex) 
+
+# Check that sample_ids match between sex_info and count matrix
+cat("Samples in sex_info:", nrow(sex_info), "\n")
+cat("Samples in count matrix:", ncol(count_data_to_filter), "\n")
 ```
 
 
@@ -941,22 +978,6 @@ sex_info$sex <- factor(sex_info$sex, levels = c("Male", "Female"))
 
 
 ```{r}
-# Prepare metadata
-sex_info <- data.frame(
-  sample_id = colnames(expr_symbol),
-  patient_id = rnaseq_patient_ids
-) %>%
-  left_join(
-    data_clinical_patient %>% 
-      dplyr::select(PATIENT_ID, SEX) %>%
-      rename(patient_id = PATIENT_ID, sex = SEX),
-    by = "patient_id"
-  ) %>%
-  filter(!is.na(sex) & sex != "")
-
-sex_info$sex <- factor(sex_info$sex, levels = c("Male", "Female"))
-
-
 dds_sex <- DESeqDataSetFromMatrix(
     countData = filtered_counts_sex,
     colData = data.frame(
@@ -1024,7 +1045,56 @@ print(res_subset_df)
 ```
 
 
-########Investigation 6
+#Investigation 6
+
+```{r}
+library(ggplot2)
+library(pheatmap)
+library(biomaRt)  
+library(dplyr)
+```
+
+```{r}
+#Clean Ensembl IDs and map to gene symbols
+
+# Remove version numbers from Ensembl IDs
+clean_ids <- sub("\\..*", "", rownames(log_norm_counts))
+rownames(log_norm_counts) <- clean_ids
+rownames(z_log) <- clean_ids
+
+# Get gene symbols from Ensembl
+mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mapping <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol"),
+  filters = "ensembl_gene_id",
+  values = clean_ids,
+  mart = mart
+)
+
+# Convert to gene symbols
+expr_df <- as.data.frame(log_norm_counts) %>%
+  mutate(ensembl_gene_id = rownames(log_norm_counts)) %>%
+  left_join(mapping, by = "ensembl_gene_id") %>%
+  filter(hgnc_symbol != "") %>%
+  distinct(hgnc_symbol, .keep_all = TRUE)
+
+rownames(expr_df) <- expr_df$hgnc_symbol
+expr_symbol <- as.matrix(expr_df[, -c(ncol(expr_df)-1, ncol(expr_df))])
+
+# Same for z-scores
+z_df <- as.data.frame(z_log) %>%
+  mutate(ensembl_gene_id = rownames(z_log)) %>%
+  left_join(mapping, by = "ensembl_gene_id") %>%
+  filter(hgnc_symbol != "") %>%
+  distinct(hgnc_symbol, .keep_all = TRUE)
+
+rownames(z_df) <- z_df$hgnc_symbol
+z_scores_symbol <- as.matrix(z_df[, -c(ncol(z_df)-1, ncol(z_df))])
+
+cat("Genes with symbols:", nrow(expr_symbol), "\n\n")
+
+```
+
 
 ```{r}
 # Subset to Samples(Patients) with Stage Info
@@ -1037,7 +1107,7 @@ stage_info <- data.frame(
   patient_id = rnaseq_patient_ids
 ) %>%
   left_join(
-    data_clinical_patient %>% 
+    data_clinical_patient %>%
       dplyr::select(PATIENT_ID, AJCC_PATHOLOGIC_TUMOR_STAGE) %>%
       rename(patient_id = PATIENT_ID, stage = AJCC_PATHOLOGIC_TUMOR_STAGE),
     by = "patient_id"
@@ -1065,9 +1135,9 @@ top500_genes <- names(sort(gene_variance, decreasing = TRUE)[1:500])
 cat("Top 500 genes selected\n")
 cat("Variance range:", round(range(gene_variance[top500_genes]), 2), "\n\n")
 
-#This shows how expressed each gene is, and take the top 500 genes that have the largest variance in expression. 
+#This shows how expressed each gene is, and take the top 500 genes that have the largest variance in expression.
 #Each patient expresses a certain amount of each gene,
-#so the highest variance is intersting as something might be happening, Could be indicative. 
+#so the highest variance is intersting as something might be happening, Could be indicative.
 ```
 
 ```{r}
@@ -1133,13 +1203,13 @@ cat(paste(oncogenes_in_data, collapse = ", "), "\n\n")
 #In this case, we are looking at does expression go up or down with stage
 
 if (length(oncogenes_in_data) > 0) {
-  
+ 
   # Convert stage to numeric (I=1, II=2, III=3, IV=4)
   stage_numeric <- as.numeric(factor(
-    stage_info$stage, 
+    stage_info$stage,
     levels = c("STAGE I", "STAGE II", "STAGE III", "STAGE IV")
   ))
-  
+ 
   # Test correlation for each oncogene
   oncogene_results <- data.frame(
     gene = oncogenes_in_data,
@@ -1150,11 +1220,11 @@ if (length(oncogenes_in_data) > 0) {
       cor.test(stage_numeric, expr_staged[g, ], method = "spearman")$p.value
     })
   )
-  
+ 
   oncogene_results$p_adj <- p.adjust(oncogene_results$p_value, method = "BH")
   oncogene_results$significant <- oncogene_results$p_adj < 0.05
   oncogene_results$direction <- ifelse(oncogene_results$correlation > 0, "UP", "DOWN")
-  
+ 
   cat("Oncogene correlation results:\n")
   print(oncogene_results %>% arrange(p_adj))
   cat("\n")
@@ -1164,31 +1234,31 @@ if (length(oncogenes_in_data) > 0) {
 #Plot significant outcomes
 
 if (exists("oncogene_results")) {
-  sig_oncogenes <- oncogene_results %>% 
-    filter(significant) %>% 
+  sig_oncogenes <- oncogene_results %>%
+    filter(significant) %>%
     pull(gene)
-  
+ 
   if (length(sig_oncogenes) > 0) {
     for (gene in sig_oncogenes) {
       corr <- oncogene_results$correlation[oncogene_results$gene == gene]
       p_adj <- oncogene_results$p_adj[oncogene_results$gene == gene]
-      
+     
       plot_data <- data.frame(
         expression = expr_staged[gene, ],
         stage = factor(stage_info$stage)
       )
-      
+     
       p <- ggplot(plot_data, aes(stage, expression, fill = stage)) +
         geom_boxplot() +
         labs(
-          title = paste(gene, "| ρ =", round(corr, 3), 
+          title = paste(gene, "| ρ =", round(corr, 3),
                        "| p_adj =", format(p_adj, scientific = TRUE, digits = 2)),
-          x = "Tumor Stage", 
+          x = "Tumor Stage",
           y = "Log2 Expression"
         ) +
         theme_bw() +
         theme(legend.position = "none")
-      
+     
       print(p)
     }
   } else {
@@ -1196,4 +1266,5 @@ if (exists("oncogene_results")) {
   }
 }
 ```
+
 
